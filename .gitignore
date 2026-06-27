@@ -1,0 +1,16 @@
+# Dataset / private challenge files
+candidates.jsonl
+sample_candidates.json
+candidate_schema.json
+job_description.docx
+README.docx
+redrob_signals_doc.docx
+submission_spec.docx
+sample_submission.csv
+
+# Python/cache
+__pycache__/
+*.pyc
+
+# macOS
+.DS_Store
