@@ -1,0 +1,28 @@
+submission_name: redrob_candidate_ranking_system
+method_type: deterministic_rule_based_ranking
+ranking_script: rank.py
+output_file: submission.csv
+python_version: "3.13"
+
+uses_hosted_llm_during_ranking: false
+uses_network_during_ranking: false
+uses_external_model_during_ranking: false
+external_dependencies: false
+cpu_only: true
+
+ai_tools_used_during_development: true
+ai_tools_note: >
+  AI assistance was used for development guidance, debugging, documentation,
+  and presentation preparation. The final ranking script does not call any
+  hosted LLM, API, network service, or external model during ranking.
+
+ranking_summary: >
+  The solution ranks candidates using deterministic scoring features derived
+  from the Senior AI Engineer job description. It rewards production evidence
+  in search, retrieval, ranking, recommendation systems, embeddings, vector
+  databases, NLP, RAG, LLM fine-tuning, and evaluation frameworks. It also
+  incorporates Redrob behavioral signals such as open-to-work status, recruiter
+  response rate, notice period, GitHub activity, profile completeness, location
+  fit, and relocation willingness. Additional penalties handle unrelated roles,
+  low availability, non-India location mismatch, and honeypot-style profile
+  inconsistencies.
