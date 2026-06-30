@@ -28,6 +28,67 @@ def has_exp_mismatch(candidate):
 
     return False
 
+def get_career_evidence_mentions(candidate):
+    history = candidate.get("career_history", [])
+    count = 0
+    for job in history:
+        title = low(job.get("title", ""))
+        company = low(job.get("company", ""))
+        desc = low(job.get("description", ""))
+        combined = title + " " + company + " " + desc
+
+        core_terms = [
+            "ranking layer", "ranking pipeline", "learning-to-rank", "learning to rank", "re-ranking", "reranking",
+            "hybrid retrieval", "semantic search", "vector search", "embedding-based search", "vector database",
+            "candidate-jd matching", "candidate matching", "recommendation system", "recommendation systems", 
+            "recommender system", "recommender systems", "recommendation pipeline", "search and discovery", "search & discovery"
+        ]
+        for term in core_terms:
+            if term in combined:
+                count += 1
+
+        eval_terms = [
+            "ndcg", "mrr", "map", "offline evaluation", "online evaluation", "a/b test", "a/b testing", 
+            "offline-online", "human relevance judgments", "evaluation framework", "relevance labeling"
+        ]
+        for term in eval_terms:
+            if term in combined:
+                count += 1
+
+        prod_terms = [
+            "production", "deployed", "serving", "real users", "p95", "latency", "scale", "qps",
+            "50m+", "30m+", "10m+", "35m+", "production deployment", "large-scale search"
+        ]
+        for term in prod_terms:
+            if term in combined:
+                count += 1
+
+        infra_terms = [
+            "embedding drift", "index refresh", "index versioning", "rollback", "monitoring",
+            "feature pipeline", "data pipeline", "retraining", "offline-online evaluation"
+        ]
+        for term in infra_terms:
+            if term in combined:
+                count += 1
+    return count
+
+def get_ai_skills_count(candidate):
+    count = 0
+    core_skills = [
+        "python", "information retrieval", "learning to rank",
+        "learning-to-rank", "semantic search", "vector search",
+        "recommendation systems", "recommendation", "embeddings",
+        "embedding", "sentence transformers", "sentence-transformers",
+        "bm25", "faiss", "milvus", "pinecone", "weaviate", "qdrant",
+        "pgvector", "elasticsearch", "opensearch", "rag", "nlp", "llms",
+        "llm"
+    ]
+    for skill in candidate.get("skills", []):
+        name = low(skill.get("name", ""))
+        if any(core in name for core in core_skills) or any(term in name for term in ["ai", "vector", "llm", "rag", "embeddings", "nlp", "semantic search", "vector search"]):
+            count += 1
+    return count
+
 top_rows = []
 
 with open(SUBMISSION_FILE, "r", encoding="utf-8") as f:
@@ -87,6 +148,15 @@ for row in top_rows:
 
     if notice >= 120:
         flags.append("LONG_NOTICE")
+
+    evidence_count = get_career_evidence_mentions(c)
+    skills_count = get_ai_skills_count(c)
+
+    if evidence_count == 0:
+        flags.append("LOW_CAREER_EVIDENCE")
+
+    if skills_count >= 5 and evidence_count <= 1:
+        flags.append("KEYWORD_SPAM_RISK")
 
     if flags:
         problems.append((rank, cid, score, p.get("current_title"), years, p.get("location"), country, flags))

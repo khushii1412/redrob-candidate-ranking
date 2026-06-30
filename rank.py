@@ -1,6 +1,7 @@
 import csv
 import json
 import re
+import sys
 
 CANDIDATES_FILE = "candidates.jsonl"
 OUT_FILE = "submission.csv"
@@ -254,11 +255,26 @@ def skills_score(candidate):
     return score
 
 
-def career_score(candidate):
+def has_exp_mismatch(candidate):
+    profile = candidate.get("profile", {})
+    years = float(profile.get("years_of_experience", 0) or 0)
+    text = safe_lower(profile.get("summary", "")) + " " + safe_lower(profile.get("headline", ""))
+
+    matches = re.findall(r"(\d+(?:\.\d+)?)\+?\s*(?:years|yrs)", text)
+
+    for m in matches:
+        mentioned = float(m)
+        if abs(years - mentioned) >= 4:
+            return True
+
+    return False
+
+
+def career_evidence_score(candidate):
     history = candidate.get("career_history", [])
 
     if not history:
-        return -30
+        return -30, 0
 
     score = 0
     companies = [safe_lower(job.get("company", "")) for job in history if job.get("company")]
@@ -273,71 +289,50 @@ def career_score(candidate):
         if service_count == len(companies):
             score -= 20
 
+    evidence_mentions = 0
     for job in history:
         title = safe_lower(job.get("title", ""))
         company = safe_lower(job.get("company", ""))
         description = safe_lower(job.get("description", ""))
         combined = title + " " + company + " " + description
 
-        if any(x in combined for x in [
-            "ranking layer",
-            "ranking pipeline",
-            "learning-to-rank",
-            "learning to rank",
-            "semantic search",
-            "hybrid retrieval",
-            "recommendation system",
-            "search and discovery",
-            "search & discovery",
-            "candidate-jd matching",
-            "embedding-based search",
-            "relevance labeling",
-            "re-ranking",
-            "reranking",
-            "rag-based ranking"
-        ]):
-            score += 30
+        core_terms = [
+            "ranking layer", "ranking pipeline", "learning-to-rank", "learning to rank", "re-ranking", "reranking",
+            "hybrid retrieval", "semantic search", "vector search", "embedding-based search", "vector database",
+            "candidate-jd matching", "candidate matching", "recommendation system", "recommendation systems", 
+            "recommender system", "recommender systems", "recommendation pipeline", "search and discovery", "search & discovery"
+        ]
+        for term in core_terms:
+            if term in combined:
+                score += 35
+                evidence_mentions += 1
 
-        if any(x in combined for x in [
-            "ndcg",
-            "mrr",
-            "map",
-            "offline evaluation",
-            "online evaluation",
-            "a/b test",
-            "a/b testing",
-            "offline-online",
-            "human relevance judgments"
-        ]):
-            score += 20
+        eval_terms = [
+            "ndcg", "mrr", "map", "offline evaluation", "online evaluation", "a/b test", "a/b testing", 
+            "offline-online", "human relevance judgments", "evaluation framework", "relevance labeling"
+        ]
+        for term in eval_terms:
+            if term in combined:
+                score += 25
+                evidence_mentions += 1
 
-        if any(x in combined for x in [
-            "production",
-            "deployed",
-            "serving",
-            "real users",
-            "p95",
-            "latency",
-            "scale",
-            "qps",
-            "50m+",
-            "30m+",
-            "10m+",
-            "35m+"
-        ]):
-            score += 13
+        prod_terms = [
+            "production", "deployed", "serving", "real users", "p95", "latency", "scale", "qps",
+            "50m+", "30m+", "10m+", "35m+", "production deployment", "large-scale search"
+        ]
+        for term in prod_terms:
+            if term in combined:
+                score += 15
+                evidence_mentions += 1
 
-        if any(x in combined for x in [
-            "embedding drift",
-            "index refresh",
-            "index versioning",
-            "rollback",
-            "monitoring",
-            "feature pipeline",
-            "data pipeline",
-            "retraining"
-        ]):
-            score += 10
+        infra_terms = [
+            "embedding drift", "index refresh", "index versioning", "rollback", "monitoring",
+            "feature pipeline", "data pipeline", "retraining", "offline-online evaluation"
+        ]
+        for term in infra_terms:
+            if term in combined:
+                score += 10
+                evidence_mentions += 1
 
         if any(x in combined for x in [
             "pure research",
@@ -346,7 +341,7 @@ def career_score(candidate):
         ]):
             score -= 30
 
-    return score
+    return score, evidence_mentions
 
 
 def behavior_score(candidate):
@@ -571,22 +566,182 @@ def final_fit_penalty(candidate):
 
     return penalty
 
-def score_candidate(candidate):
+def score_candidate_internal(candidate):
     profile = candidate.get("profile", {})
     text = collect_text(candidate)
 
-    score = 0
-    score += experience_score(profile.get("years_of_experience"))
-    score += title_score(candidate)
-    score += text_score(text)
-    score += skills_score(candidate)
-    score += career_score(candidate)
-    score += behavior_score(candidate)
-    score += location_score(candidate)
-    score += consistency_penalty(candidate)
-    score += final_fit_penalty(candidate)
+    # 1. Experience score
+    exp_s = experience_score(profile.get("years_of_experience"))
+    if exp_s is None:
+        exp_s = 0
 
-    return round(score, 4)
+    # 2. Title score
+    tit_s = title_score(candidate)
+
+    # 3. Skill score
+    base_skill_s = skills_score(candidate)
+    text_skill_contribution = 0
+    for term in GOOD_TERMS:
+        if term in text:
+            text_skill_contribution += 4
+    for term in BAD_TERMS:
+        if term in text:
+            text_skill_contribution -= 7
+    skill_s = base_skill_s + text_skill_contribution
+
+    # Count AI/vector/LLM skills for spam detection
+    ai_skills_count = 0
+    for skill in candidate.get("skills", []):
+        name = safe_lower(skill.get("name", ""))
+        if any(core in name for core in CORE_SKILLS) or any(term in name for term in ["ai", "vector", "llm", "rag", "embeddings", "nlp", "semantic search", "vector search"]):
+            ai_skills_count += 1
+
+    # 4. Career evidence score
+    base_career_s, evidence_mentions = career_evidence_score(candidate)
+    text_career_contribution = 0
+    strong_phrases = [
+        "production recommendation system",
+        "production ml systems",
+        "hybrid retrieval system",
+        "semantic search system",
+        "learning-to-rank model",
+        "learning to rank model",
+        "ranking pipeline",
+        "ranking layer",
+        "retrieval architecture",
+        "candidate-jd matching",
+        "offline evaluation framework",
+        "online a/b",
+        "a/b testing infrastructure",
+        "embedding drift",
+        "index refresh",
+        "relevance labeling",
+        "recruiter-feedback loop",
+        "behavioral-signal integration",
+        "offline-online evaluation"
+    ]
+    for phrase in strong_phrases:
+        if phrase in text:
+            text_career_contribution += 13
+    scale_phrases = [
+        "real users", "deployed", "production", "serving",
+        "50m+", "30m+", "10m+", "35m+", "8k",
+        "p95", "latency", "qps"
+    ]
+    for phrase in scale_phrases:
+        if phrase in text:
+            text_career_contribution += 4
+    career_s = base_career_s + text_career_contribution
+
+    # 5. Behavior score
+    beh_s = behavior_score(candidate)
+
+    # 6. Location score
+    loc_s = location_score(candidate)
+
+    # 7. Consistency penalty
+    cons_p = consistency_penalty(candidate)
+
+    # Keyword spam detection
+    keyword_spam_penalty = 0
+    if ai_skills_count >= 5 and evidence_mentions == 0:
+        keyword_spam_penalty = -250
+    elif ai_skills_count >= 5 and evidence_mentions == 1:
+        keyword_spam_penalty = -120
+    elif ai_skills_count >= 8 and evidence_mentions <= 2:
+        keyword_spam_penalty = -200
+
+    cons_p += keyword_spam_penalty
+
+    # 8. Final fit penalty
+    fit_p = final_fit_penalty(candidate)
+
+    total = exp_s + tit_s + skill_s + career_s + beh_s + loc_s + cons_p + fit_p
+
+    breakdown = {
+        "experience_score": exp_s,
+        "title_score": tit_s,
+        "skill_score": skill_s,
+        "career_evidence_score": career_s,
+        "behavior_score": beh_s,
+        "location_score": loc_s,
+        "consistency_penalty": cons_p,
+        "final_fit_penalty": fit_p,
+        "ai_skills_count": ai_skills_count,
+        "career_evidence_mentions": evidence_mentions,
+        "keyword_spam_penalty": keyword_spam_penalty
+    }
+
+    return round(total, 4), breakdown
+
+
+def score_candidate(candidate):
+    score, _ = score_candidate_internal(candidate)
+    return score
+
+
+def rerank_stage(scored_candidates):
+    adjusted = []
+    for score, cid, candidate, breakdown in scored_candidates:
+        p = candidate.get("profile", {})
+        s = candidate.get("redrob_signals", {})
+        title = safe_lower(p.get("current_title", ""))
+        country = safe_lower(p.get("country", ""))
+        open_to_work = s.get("open_to_work_flag")
+        response = float(s.get("recruiter_response_rate", 0) or 0)
+        willing = s.get("willing_to_relocate")
+
+        has_bad_title = any(bad in title for bad in BAD_TITLES)
+        has_exp_m = has_exp_mismatch(candidate)
+        is_not_open_low_res = (not open_to_work and response < 0.3)
+        is_non_india_no_reloc = (country != "india" and not willing)
+
+        rerank_penalty = 0
+        if has_bad_title or has_exp_m:
+            rerank_penalty -= 600
+        elif is_not_open_low_res or is_non_india_no_reloc:
+            rerank_penalty -= 400
+
+        # Boost for ideal top candidates:
+        years = float(p.get("years_of_experience", 0) or 0)
+        is_ideal_experience = (5 <= years <= 9)
+        is_india_or_relocate = (country == "india" or willing)
+        is_open_to_work = open_to_work
+        is_decent_response = (response >= 0.4)
+
+        has_direct_experience = breakdown.get("career_evidence_mentions", 0) >= 2
+
+        has_production = False
+        for job in candidate.get("career_history", []):
+            desc = safe_lower(job.get("description", ""))
+            if any(term in desc for term in ["production", "deployed", "serving", "real users", "p95", "latency", "scale", "qps"]):
+                has_production = True
+                break
+
+        is_top_fit = (
+            is_ideal_experience and 
+            is_india_or_relocate and 
+            is_open_to_work and 
+            is_decent_response and 
+            has_direct_experience and 
+            has_production
+        )
+
+        boost = 0
+        if is_top_fit:
+            boost += 80
+        elif is_ideal_experience and is_india_or_relocate and is_open_to_work:
+            boost += 30
+
+        final_score = score + rerank_penalty + boost
+
+        breakdown["final_fit_penalty"] += rerank_penalty
+        breakdown["career_evidence_score"] += boost
+
+        adjusted.append((round(final_score, 4), cid, candidate, breakdown))
+
+    adjusted.sort(key=lambda x: (-x[0], x[1]))
+    return adjusted
 
 
 def get_relevant_skills(candidate):
@@ -625,6 +780,43 @@ def get_best_career_evidence(candidate):
     return best[:2]
 
 
+def get_detailed_career_evidence(candidate):
+    evidence_points = []
+    for job in candidate.get("career_history", []):
+        desc = safe_lower(job.get("description", ""))
+        title = safe_lower(job.get("title", ""))
+        combined = title + " " + desc
+
+        if "ranking pipeline" in combined or "ranking layer" in combined:
+            evidence_points.append("production ranking pipeline")
+        if "semantic search" in combined:
+            evidence_points.append("semantic search system")
+        if "rag-based ranking" in combined or "rag ranking" in combined or ("rag" in combined and "ranking" in combined):
+            evidence_points.append("RAG ranking pipeline")
+        if "recommendation system" in combined or "recommender system" in combined:
+            evidence_points.append("recommendation system")
+
+        eval_found = []
+        if "ndcg" in combined:
+            eval_found.append("NDCG")
+        if "a/b test" in combined:
+            eval_found.append("A/B testing")
+        if "offline evaluation" in combined or "online evaluation" in combined:
+            eval_found.append("offline/online evaluation")
+
+        if eval_found:
+            evidence_points.append(f"metrics/eval ({'/'.join(eval_found)})")
+
+    seen = set()
+    unique_evidence = []
+    for pt in evidence_points:
+        if pt not in seen:
+            seen.add(pt)
+            unique_evidence.append(pt)
+
+    return unique_evidence
+
+
 def make_reason(candidate):
     profile = candidate.get("profile", {})
     signals = candidate.get("redrob_signals", {})
@@ -637,41 +829,44 @@ def make_reason(candidate):
     open_to_work = signals.get("open_to_work_flag")
 
     skills = get_relevant_skills(candidate)
-    career_evidence = get_best_career_evidence(candidate)
+    evidence_pts = get_detailed_career_evidence(candidate)
 
     if skills:
-        skill_text = ", ".join(skills)
+        skill_text = f"skills in {', '.join(skills)}"
     else:
         skill_text = "limited direct retrieval/ranking skills"
 
-    if career_evidence:
-        career_text = "Career evidence includes " + " and ".join(career_evidence)
+    if evidence_pts:
+        evidence_text = f"Demonstrated experience with {', '.join(evidence_pts)}"
     else:
-        career_text = "Career evidence is more adjacent than directly search/ranking focused"
+        fallback_ev = get_best_career_evidence(candidate)
+        if fallback_ev:
+            evidence_text = f"Adjacent search/ranking experience at {', '.join(fallback_ev)}"
+        else:
+            evidence_text = "Adjacent ML/software experience"
 
-    availability = "open to work" if open_to_work else "not marked open to work"
+    availability = "open to work" if open_to_work else "not open to work"
 
-    return (
-        f"{title} with {years} years in {location}; key relevant skills include {skill_text}. "
-        f"{career_text}; {availability}, response rate {response:.2f}, notice period {notice} days."
-    )
+    reason = f"{title} ({years} yrs, {location}) with {skill_text}. {evidence_text}. Status: {availability}, response rate {response:.0%}, notice: {notice}d."
+    return reason
 
 
 def main():
+    debug_mode = "--debug" in sys.argv
     scored = []
 
     for candidate in load_candidates(CANDIDATES_FILE):
-        score = score_candidate(candidate)
-        scored.append((score, candidate["candidate_id"], candidate))
+        score, breakdown = score_candidate_internal(candidate)
+        scored.append((score, candidate["candidate_id"], candidate, breakdown))
 
-    scored.sort(key=lambda x: (-x[0], x[1]))
+    scored = rerank_stage(scored)
     top_100 = scored[:100]
 
     with open(OUT_FILE, "w", encoding="utf-8", newline="") as f:
         writer = csv.writer(f)
         writer.writerow(["candidate_id", "rank", "score", "reasoning"])
 
-        for rank, (score, candidate_id, candidate) in enumerate(top_100, start=1):
+        for rank, (score, candidate_id, candidate, breakdown) in enumerate(top_100, start=1):
             writer.writerow([
                 candidate_id,
                 rank,
@@ -680,6 +875,16 @@ def main():
             ])
 
     print(f"Wrote {OUT_FILE}")
+
+    if debug_mode:
+        print("\n--- DEBUG BREAKDOWN (TOP 10) ---")
+        for rank, (score, candidate_id, candidate, breakdown) in enumerate(top_100[:10], start=1):
+            p = candidate.get("profile", {})
+            print(f"Rank {rank} | ID: {candidate_id} | Name: {p.get('anonymized_name')} | Title: {p.get('current_title')} | Score: {score}")
+            print(f"  exp: {breakdown['experience_score']} | title: {breakdown['title_score']} | skill: {breakdown['skill_score']} | career: {breakdown['career_evidence_score']} | behavior: {breakdown['behavior_score']} | location: {breakdown['location_score']} | consistency: {breakdown['consistency_penalty']} | fit: {breakdown['final_fit_penalty']}")
+            print(f"  AI skills: {breakdown['ai_skills_count']} | career mentions: {breakdown['career_evidence_mentions']} | spam penalty: {breakdown['keyword_spam_penalty']}")
+            print(f"  Reason: {make_reason(candidate)}")
+            print("-" * 80)
 
 
 if __name__ == "__main__":
