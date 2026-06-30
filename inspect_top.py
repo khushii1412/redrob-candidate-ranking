@@ -1,5 +1,12 @@
 import csv
 import json
+import sys
+import signal
+
+try:
+    signal.signal(signal.SIGPIPE, signal.SIG_DFL)
+except AttributeError:
+    pass
 
 SUBMISSION_FILE = "submission.csv"
 CANDIDATES_FILE = "candidates.jsonl"

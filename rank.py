@@ -958,15 +958,48 @@ def main():
     scored = rerank_stage(scored)
     top_100 = scored[:100]
 
+    # Calculate min and max of top 100 original scores for normalization
+    orig_scores = [x[0] for x in top_100]
+    max_orig = orig_scores[0] if orig_scores else 1.0
+    min_orig = orig_scores[-1] if orig_scores else 0.0
+    range_orig = max_orig - min_orig
+    target_max = 1000.0
+    target_min = 850.0
+    range_target = target_max - target_min
+
+    # 1. Initial linear scaling
+    norm_scores = []
+    for score in orig_scores:
+        if range_orig > 0:
+            ns = target_min + (score - min_orig) / range_orig * range_target
+        else:
+            ns = target_max
+        norm_scores.append(round(ns, 2))
+
+    # 2. Adjust top-to-bottom to guarantee monotonicity and tie-break rules
+    for i in range(1, len(norm_scores)):
+        # Ensure it is non-increasing
+        if norm_scores[i] > norm_scores[i-1]:
+            norm_scores[i] = norm_scores[i-1]
+        
+        # If equal, check candidate_id ascending tie-break requirement
+        # If candidate_id is descending (top_100[i-1][1] > top_100[i][1]), we must decrease norm_scores[i]
+        if norm_scores[i] == norm_scores[i-1] and top_100[i-1][1] > top_100[i][1]:
+            norm_scores[i] = round(norm_scores[i-1] - 0.01, 2)
+
+    normalized_top_100 = []
+    for rank, (score, candidate_id, candidate, breakdown) in enumerate(top_100, start=1):
+        normalized_top_100.append((norm_scores[rank-1], score, candidate_id, candidate, breakdown))
+
     with open(OUT_FILE, "w", encoding="utf-8", newline="") as f:
         writer = csv.writer(f)
         writer.writerow(["candidate_id", "rank", "score", "reasoning"])
 
-        for rank, (score, candidate_id, candidate, breakdown) in enumerate(top_100, start=1):
+        for rank, (norm_score, score, candidate_id, candidate, breakdown) in enumerate(normalized_top_100, start=1):
             writer.writerow([
                 candidate_id,
                 rank,
-                score,
+                norm_score,
                 make_reason(candidate)
             ])
 
@@ -974,9 +1007,9 @@ def main():
 
     if debug_mode:
         print("\n--- DEBUG BREAKDOWN (TOP 10) ---")
-        for rank, (score, candidate_id, candidate, breakdown) in enumerate(top_100[:10], start=1):
+        for rank, (norm_score, score, candidate_id, candidate, breakdown) in enumerate(normalized_top_100[:10], start=1):
             p = candidate.get("profile", {})
-            print(f"Rank {rank} | ID: {candidate_id} | Name: {p.get('anonymized_name')} | Title: {p.get('current_title')} | Tier: {breakdown['tier']} | Score: {score}")
+            print(f"Rank {rank} | ID: {candidate_id} | Name: {p.get('anonymized_name')} | Title: {p.get('current_title')} | Tier: {breakdown['tier']} | Exported Score: {norm_score} | Raw Score: {score}")
             print(f"  exp: {breakdown['experience_score']} | title: {breakdown['title_score']} | skill: {breakdown['skill_score']} | career: {breakdown['career_evidence_score']} | behavior: {breakdown['behavior_score']} | location: {breakdown['location_score']} | consistency: {breakdown['consistency_penalty']} | fit: {breakdown['final_fit_penalty']}")
             print(f"  AI skills: {breakdown['ai_skills_count']} | career mentions: {breakdown['career_evidence_mentions']} | spam penalty: {breakdown['keyword_spam_penalty']}")
             print(f"  Reason: {make_reason(candidate)}")
