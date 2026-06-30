@@ -11,8 +11,80 @@ BAD_TITLES = [
     "content writer", "civil engineer", "mechanical engineer"
 ]
 
+GOOD_EVIDENCE_TERMS = [
+    "built and shipped production recommendation system",
+    "production recommendation system",
+    "recommender system",
+    "recommendation system",
+    "recommendation systems",
+    "recommendation pipeline",
+    "semantic search system",
+    "semantic search",
+    "hybrid retrieval",
+    "bm25 + dense retrieval",
+    "dense retrieval",
+    "bm25",
+    "vector search",
+    "vector database",
+    "embedding-based search",
+    "learning-to-rank",
+    "learning to rank",
+    "ranking pipeline",
+    "ranking layer",
+    "re-ranking",
+    "reranking",
+    "rag-based ranking",
+    "rag ranking",
+    "candidate-jd matching",
+    "candidate matching",
+    "candidate-jd",
+    "recruiter-facing search",
+    "search & discovery",
+    "search and discovery",
+    "a/b testing",
+    "a/b test",
+    "ndcg",
+    "mrr",
+    "map",
+    "recall@k",
+    "p95 latency",
+    "p95",
+    "latency",
+    "qps",
+    "offline/online evaluation",
+    "offline-online evaluation",
+    "offline evaluation",
+    "online evaluation",
+    "relevance labels",
+    "relevance labeling",
+    "human relevance judgments",
+    "embedding drift",
+    "index refresh",
+    "index versioning",
+    "production deployment",
+    "production ml",
+    "deployed",
+    "serving",
+    "real users"
+]
+
+AI_SKILL_TERMS = [
+    "llm", "rag", "embedding", "vector", "faiss", "pinecone", "qdrant",
+    "weaviate", "milvus", "elasticsearch", "opensearch", "nlp",
+    "recommendation", "ranking", "search", "fine-tuning", "lora", "qlora"
+]
+
+
 def low(x):
     return str(x or "").lower()
+
+
+def get_notice(signals):
+    notice_raw = signals.get("notice_period_days", 180)
+    if notice_raw is None:
+        return 180
+    return int(notice_raw)
+
 
 def has_exp_mismatch(candidate):
     profile = candidate.get("profile", {})
@@ -28,66 +100,31 @@ def has_exp_mismatch(candidate):
 
     return False
 
-def get_career_evidence_mentions(candidate):
-    history = candidate.get("career_history", [])
+
+def career_evidence_count(candidate):
     count = 0
-    for job in history:
-        title = low(job.get("title", ""))
-        company = low(job.get("company", ""))
-        desc = low(job.get("description", ""))
-        combined = title + " " + company + " " + desc
 
-        core_terms = [
-            "ranking layer", "ranking pipeline", "learning-to-rank", "learning to rank", "re-ranking", "reranking",
-            "hybrid retrieval", "semantic search", "vector search", "embedding-based search", "vector database",
-            "candidate-jd matching", "candidate matching", "recommendation system", "recommendation systems", 
-            "recommender system", "recommender systems", "recommendation pipeline", "search and discovery", "search & discovery"
-        ]
-        for term in core_terms:
-            if term in combined:
+    for job in candidate.get("career_history", []):
+        text = low(job.get("title", "")) + " " + low(job.get("description", ""))
+
+        for term in GOOD_EVIDENCE_TERMS:
+            if term in text:
                 count += 1
 
-        eval_terms = [
-            "ndcg", "mrr", "map", "offline evaluation", "online evaluation", "a/b test", "a/b testing", 
-            "offline-online", "human relevance judgments", "evaluation framework", "relevance labeling"
-        ]
-        for term in eval_terms:
-            if term in combined:
-                count += 1
-
-        prod_terms = [
-            "production", "deployed", "serving", "real users", "p95", "latency", "scale", "qps",
-            "50m+", "30m+", "10m+", "35m+", "production deployment", "large-scale search"
-        ]
-        for term in prod_terms:
-            if term in combined:
-                count += 1
-
-        infra_terms = [
-            "embedding drift", "index refresh", "index versioning", "rollback", "monitoring",
-            "feature pipeline", "data pipeline", "retraining", "offline-online evaluation"
-        ]
-        for term in infra_terms:
-            if term in combined:
-                count += 1
     return count
 
-def get_ai_skills_count(candidate):
+
+def ai_skill_count(candidate):
     count = 0
-    core_skills = [
-        "python", "information retrieval", "learning to rank",
-        "learning-to-rank", "semantic search", "vector search",
-        "recommendation systems", "recommendation", "embeddings",
-        "embedding", "sentence transformers", "sentence-transformers",
-        "bm25", "faiss", "milvus", "pinecone", "weaviate", "qdrant",
-        "pgvector", "elasticsearch", "opensearch", "rag", "nlp", "llms",
-        "llm"
-    ]
+
     for skill in candidate.get("skills", []):
         name = low(skill.get("name", ""))
-        if any(core in name for core in core_skills) or any(term in name for term in ["ai", "vector", "llm", "rag", "embeddings", "nlp", "semantic search", "vector search"]):
+
+        if any(term in name for term in AI_SKILL_TERMS):
             count += 1
+
     return count
+
 
 top_rows = []
 
@@ -112,6 +149,22 @@ with open(CANDIDATES_FILE, "r", encoding="utf-8") as f:
 
 problems = []
 
+# To store summary counts by risk flag type
+flag_counts_overall = {
+    "BAD_TITLE": 0,
+    "EXP_MISMATCH": 0,
+    "NOT_OPEN_LOW_RESPONSE": 0,
+    "NON_INDIA_NO_RELOCATE": 0,
+    "VERY_HIGH_EXPERIENCE": 0,
+    "LONG_NOTICE": 0,
+    "LOW_CAREER_EVIDENCE": 0,
+    "KEYWORD_SPAM_RISK": 0
+}
+
+top10_risky = 0
+top20_risky = 0
+top50_risky = 0
+
 for row in top_rows:
     cid = row["candidate_id"]
     rank = int(row["rank"])
@@ -127,7 +180,10 @@ for row in top_rows:
     open_to_work = s.get("open_to_work_flag")
     response = float(s.get("recruiter_response_rate", 0) or 0)
     willing = s.get("willing_to_relocate")
-    notice = int(s.get("notice_period_days", 180) or 180)
+    notice = get_notice(s)
+
+    evidence_count = career_evidence_count(c)
+    skill_count = ai_skill_count(c)
 
     flags = []
 
@@ -149,21 +205,49 @@ for row in top_rows:
     if notice >= 120:
         flags.append("LONG_NOTICE")
 
-    evidence_count = get_career_evidence_mentions(c)
-    skills_count = get_ai_skills_count(c)
-
-    if evidence_count == 0:
+    if evidence_count <= 2:
         flags.append("LOW_CAREER_EVIDENCE")
 
-    if skills_count >= 5 and evidence_count <= 1:
+    if skill_count >= 8 and evidence_count <= 2:
         flags.append("KEYWORD_SPAM_RISK")
 
     if flags:
-        problems.append((rank, cid, score, p.get("current_title"), years, p.get("location"), country, flags))
+        # Increment flag counts
+        for flag in flags:
+            if flag in flag_counts_overall:
+                flag_counts_overall[flag] += 1
+                
+        # Count risky per range
+        if rank <= 10:
+            top10_risky += 1
+        if rank <= 20:
+            top20_risky += 1
+        if rank <= 50:
+            top50_risky += 1
 
-print("Total risky candidates in top 100:", len(problems))
+        problems.append((
+            rank, cid, score, p.get("current_title"), years,
+            p.get("location"), country, notice, flags
+        ))
+
+print("==================================================")
+print("              RISK FLAG SUMMARY                  ")
+print("==================================================")
+print(f"Top 10 Risky Candidates Count: {top10_risky}")
+print(f"Top 20 Risky Candidates Count: {top20_risky}")
+print(f"Top 50 Risky Candidates Count: {top50_risky}")
+print(f"Total Risky Candidates in Top 100: {len(problems)}")
 print()
-
+print("Risk Flag Counts Overall:")
+for flag, count in flag_counts_overall.items():
+    print(f"  - {flag}: {count}")
+print()
+print("==================================================")
+print("             DETAILED RISKY LIST                 ")
+print("==================================================")
 for item in problems:
-    rank, cid, score, title, years, location, country, flags = item
-    print(f"Rank {rank} | {cid} | score={score} | {title} | {years} yrs | {location}, {country} | {', '.join(flags)}")
+    rank, cid, score, title, years, location, country, notice, flags = item
+    print(
+        f"Rank {rank} | {cid} | score={score} | {title} | "
+        f"{years} yrs | {location}, {country} | notice={notice} | {', '.join(flags)}"
+    )
